@@ -36,8 +36,7 @@ jobs:
           IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
         run: |
           echo "Building image ${IMAGE_REPO}:${VERSION}"
-          ls -la
-          docker build . --tag ${IMAGE_REPO}:${VERSION}
+          docker build . -t ${IMAGE_REPO}:${VERSION}
           docker tag ${IMAGE_REPO}:${VERSION} ${IMAGE_REPO}:latest
 
       - name: Push Docker image

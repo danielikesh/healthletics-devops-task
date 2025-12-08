@@ -17,7 +17,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set Version
+      # Set VERSION = 1.0.<run_number>
+      - name: Set version
         id: set_version
         run: |
           VERSION="1.0.${GITHUB_RUN_NUMBER}"
@@ -31,21 +32,15 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build Docker image
-        env:
-          IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
-        run: |
-          echo "Building image ${IMAGE_REPO}:${VERSION}"
-          docker build . -t ${IMAGE_REPO}:${VERSION}
-          docker tag ${IMAGE_REPO}:${VERSION} ${IMAGE_REPO}:latest
-
-      - name: Push Docker image
-        env:
-          IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
-        run: |
-          docker push ${IMAGE_REPO}:${VERSION}
-          docker push ${IMAGE_REPO}:latest
-
+      # Build + push using official Docker action (avoids buildx CLI issues)
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.IMAGE_REPO }}:${{ env.VERSION }}
+            ${{ secrets.IMAGE_REPO }}:latest
 
   deploy:
     runs-on: ubuntu-latest
@@ -60,7 +55,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set VERSION from build job
+      - name: Use version from build job
         run: echo "VERSION=${{ needs.build_and_push.outputs.version }}" >> $GITHUB_ENV
 
       - name: Setup kubectl
@@ -76,7 +71,7 @@ jobs:
       - name: Helm lint
         run: helm lint helm/myapp
 
-      - name: Helm deploy
+      - name: Helm upgrade/install
         id: helm_deploy
         run: |
           helm upgrade --install healthletic-app helm/myapp \
@@ -89,13 +84,14 @@ jobs:
       - name: Show pods
         run: kubectl get pods -n ${K8S_NAMESPACE}
 
-      - name: Smoke test
+      - name: Smoke test /health
         run: |
           HTTP_CODE=$(kubectl run curl-test --rm -i --tty \
             --image=curlimages/curl \
             --restart=Never \
             -n ${K8S_NAMESPACE} -- \
-            curl -s -o /dev/null -w "%{http_code}" http://healthletic-app:8080/health | tr -dc '0-9')
+            curl -s -o /dev/null -w "%{http_code}" "http://healthletic-app:8080/health" \
+            | tr -dc '0-9')
           echo "HTTP_CODE=${HTTP_CODE}"
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "Smoke test failed"
@@ -104,4 +100,6 @@ jobs:
 
       - name: Rollback on failure
         if: failure() && steps.helm_deploy.outcome == 'success'
-        run: helm rollback healthletic-app 1 -n ${K8S_NAMESPACE}
+        run: |
+          echo "Rolling back previous release..."
+          helm rollback healthletic-app 1 -n ${K8S_NAMESPACE} || echo "Rollback failed or no previous revision."

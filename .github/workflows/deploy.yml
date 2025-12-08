@@ -15,42 +15,28 @@ jobs:
 
     steps:
       - name: Checkout code
-      uses: actions/checkout@v4
+        uses: actions/checkout@v4
 
-      # --------------------------
-      # Set VERSION = 1.0.<run_number>
-      # --------------------------
       - name: Set Version
         id: set_version
         run: |
           VERSION="1.0.${GITHUB_RUN_NUMBER}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Using version: ${VERSION}"
 
-      # --------------------------
-      # Docker login
-      # --------------------------
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # --------------------------
-      # Build Docker image  (PATH first to avoid buildx error)
-      # --------------------------
       - name: Build Docker image
         env:
           IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
         run: |
-          echo "Building image ${IMAGE_REPO}:${VERSION}"
           docker build . -t ${IMAGE_REPO}:${VERSION}
           docker tag ${IMAGE_REPO}:${VERSION} ${IMAGE_REPO}:latest
 
-      # --------------------------
-      # Push Docker image
-      # --------------------------
       - name: Push Docker image
         env:
           IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
@@ -71,35 +57,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Use version from build job
+      - name: Set VERSION from build job
         run: echo "VERSION=${{ needs.build_and_push.outputs.version }}" >> $GITHUB_ENV
 
-      # --------------------------
-      # Setup kubectl + helm
-      # --------------------------
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
 
       - name: Setup helm
         uses: azure/setup-helm@v4
 
-      # --------------------------
-      # Configure kubeconfig
-      # --------------------------
       - name: Configure kubeconfig
         run: |
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
 
-      # --------------------------
-      # Helm Lint
-      # --------------------------
       - name: Helm lint
         run: helm lint helm/myapp
 
-      # --------------------------
-      # Helm deploy
-      # --------------------------
-      - name: Helm upgrade/install
+      - name: Helm deploy
         id: helm_deploy
         run: |
           helm upgrade --install healthletic-app helm/myapp \
@@ -109,34 +83,22 @@ jobs:
             --set image.tag=${VERSION} \
             --wait --timeout 300s
 
-      - name: Show Pods
+      - name: Show pods
         run: kubectl get pods -n ${K8S_NAMESPACE}
 
-      # --------------------------
-      # Smoke Test (/health)
-      # --------------------------
-      - name: Run smoke test
-        id: smoke_test
+      - name: Smoke test
         run: |
           HTTP_CODE=$(kubectl run curl-test --rm -i --tty \
             --image=curlimages/curl \
             --restart=Never \
             -n ${K8S_NAMESPACE} -- \
-            curl -s -o /dev/null -w "%{http_code}" "http://healthletic-app:8080/health" \
-            | tr -dc '0-9')
-
+            curl -s -o /dev/null -w "%{http_code}" http://healthletic-app:8080/health | tr -dc '0-9')
           echo "HTTP_CODE=${HTTP_CODE}"
-
           if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "Smoke test failed."
+            echo "Smoke test failed"
             exit 1
           fi
 
-      # --------------------------
-      # Rollback on failure
-      # --------------------------
       - name: Rollback on failure
         if: failure() && steps.helm_deploy.outcome == 'success'
-        run: |
-          echo "Rolling back previous Helm release..."
-          helm rollback healthletic-app 1 -n ${K8S_NAMESPACE} || echo "Rollback failed or no previous revision."
+        run: helm rollback healthletic-app 1 -n ${K8S_NAMESPACE}

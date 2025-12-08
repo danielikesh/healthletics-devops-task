@@ -2,27 +2,31 @@ name: CI-CD-Healthletics
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   build_and_push:
     runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.set_version.outputs.version }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       # --------------------------
-      # Generate version number
+      # Set VERSION = 1.0.<run_number>
       # --------------------------
       - name: Set Version
-        id: version
+        id: set_version
         run: |
           VERSION="1.0.${GITHUB_RUN_NUMBER}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
-
-      - name: Show version
-        run: echo "Building version $VERSION"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Using version: ${VERSION}"
 
       # --------------------------
       # Docker login
@@ -37,28 +41,38 @@ jobs:
       # Build Docker image
       # --------------------------
       - name: Build Docker image
+        env:
+          IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
         run: |
-          docker build -t ${{ secrets.IMAGE_REPO }}:${VERSION} .
-          docker tag ${{ secrets.IMAGE_REPO }}:${VERSION} ${{ secrets.IMAGE_REPO }}:latest
+          echo "Building image ${IMAGE_REPO}:${VERSION}"
+          docker build -t ${IMAGE_REPO}:${VERSION} .
+          docker tag ${IMAGE_REPO}:${VERSION} ${IMAGE_REPO}:latest
 
       # --------------------------
       # Push Docker image
       # --------------------------
       - name: Push Docker image
+        env:
+          IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
         run: |
-          docker push ${{ secrets.IMAGE_REPO }}:${VERSION}
-          docker push ${{ secrets.IMAGE_REPO }}:latest
+          docker push ${IMAGE_REPO}:${VERSION}
+          docker push ${IMAGE_REPO}:latest
 
   deploy:
     runs-on: ubuntu-latest
     needs: build_and_push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    env:
+      IMAGE_REPO: ${{ secrets.IMAGE_REPO }}
+      K8S_NAMESPACE: ${{ secrets.K8S_NAMESPACE }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set version from previous job
-        run: echo "VERSION=1.0.${GITHUB_RUN_NUMBER}" >> $GITHUB_ENV
+      - name: Use version from build job
+        run: echo "VERSION=${{ needs.build_and_push.outputs.version }}" >> $GITHUB_ENV
 
       # --------------------------
       # Setup kubectl + helm
@@ -86,30 +100,43 @@ jobs:
       # Helm deploy
       # --------------------------
       - name: Helm upgrade/install
+        id: helm_deploy
         run: |
           helm upgrade --install healthletic-app helm/myapp \
-            --namespace ${{ secrets.K8S_NAMESPACE }} \
+            --namespace ${K8S_NAMESPACE} \
             --create-namespace \
-            --set image.repository=${{ secrets.IMAGE_REPO }} \
+            --set image.repository=${IMAGE_REPO} \
             --set image.tag=${VERSION} \
             --wait --timeout 300s
 
       - name: Show Pods
-        run: kubectl get pods -n ${{ secrets.K8S_NAMESPACE }}
+        run: kubectl get pods -n ${K8S_NAMESPACE}
 
       # --------------------------
-      # Smoke Test
+      # Smoke Test (/health)
       # --------------------------
       - name: Run smoke test
+        id: smoke_test
         run: |
           HTTP_CODE=$(kubectl run curl-test --rm -i --tty \
             --image=curlimages/curl \
-            -n ${{ secrets.K8S_NAMESPACE }} -- \
-            curl -s -o /dev/null -w "%{http_code}" http://healthletic-app:8080/health | tr -dc '0-9')
+            --restart=Never \
+            -n ${K8S_NAMESPACE} -- \
+            curl -s -o /dev/null -w "%{http_code}" "http://healthletic-app:8080/health" \
+            | tr -dc '0-9')
 
-          echo "HTTP CODE = $HTTP_CODE"
+          echo "HTTP_CODE=${HTTP_CODE}"
 
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "Smoke test failed."
             exit 1
           fi
+
+      # --------------------------
+      # Rollback on failure
+      # --------------------------
+      - name: Rollback on failure
+        if: failure() && steps.helm_deploy.outcome == 'success'
+        run: |
+          echo "Rolling back previous Helm release..."
+          helm rollback healthletic-app 1 -n ${K8S_NAMESPACE} || echo "Rollback failed or no previous revision."

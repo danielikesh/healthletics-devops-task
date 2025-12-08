@@ -68,7 +68,9 @@ jobs:
 
       - name: Configure kubeconfig
         run: |
+          mkdir -p $HOME/.kube
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+
 
       - name: Helm lint
         run: helm lint helm/myapp

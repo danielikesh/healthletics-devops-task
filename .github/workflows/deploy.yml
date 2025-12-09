@@ -31,19 +31,27 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Build + push using official Docker action
-      - name: Build and push Docker image
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
+          push: false
           tags: |
-            ${{
-              env.IMAGE_REPO
-            }}:${{ env.VERSION }}
-            ${{
-              env.IMAGE_REPO
-            }}:latest
+            ${{ env.IMAGE_REPO }}:${{ env.VERSION }}
+            ${{ env.IMAGE_REPO }}:latest
+
+      - name: Trivy image scan (CRITICAL,HIGH)
+        uses: aquasecurity/trivy-action@0.22.0
+        with:
+          image-ref: "${{ env.IMAGE_REPO }}:${{ env.VERSION }}"
+          format: "table"
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
+
+      - name: Push Docker image
+        run: |
+          docker push "${IMAGE_REPO}:${VERSION}"
+          docker push "${IMAGE_REPO}:latest"
 
   deploy:
     runs-on: ubuntu-latest
@@ -71,7 +79,6 @@ jobs:
           mkdir -p $HOME/.kube
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
 
-
       - name: Helm lint
         run: helm lint helm/myapp
 
@@ -88,22 +95,28 @@ jobs:
       - name: Show pods
         run: kubectl get pods -n ${K8S_NAMESPACE}
 
-      - name: Smoke test /health
+      - name: Smoke test /health via port-forward
+        id: smoke_test
         run: |
-          HTTP_CODE=$(kubectl run curl-test --rm -i --tty \
-            --image=curlimages/curl \
-            --restart=Never \
-            -n ${K8S_NAMESPACE} -- \
-            curl -s -o /dev/null -w "%{http_code}" "http://healthletic-app:8080/health" \
-            | tr -dc '0-9')
+          set -e
+          echo "Port-forwarding service/healthletic-app 8080 -> 8080"
+          kubectl port-forward svc/healthletic-app -n ${K8S_NAMESPACE} 8080:8080 > pf.log 2>&1 &
+          PF_PID=$!
+          sleep 5
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/health" || echo "000")
           echo "HTTP_CODE=${HTTP_CODE}"
+
+          kill $PF_PID || true
+
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "Smoke test failed"
             exit 1
           fi
+          echo "Smoke test passed"
 
       - name: Rollback on failure
         if: failure() && steps.helm_deploy.outcome == 'success'
         run: |
           echo "Rolling back previous release..."
-          helm rollback healthletic-app 1 -n ${K8S_NAMESPACE} || echo "Rollback failed or no previous revision."
+          helm rollback healthletic-app -n ${K8S_NAMESPACE} --wait || echo "Rollback failed or no previous revision."

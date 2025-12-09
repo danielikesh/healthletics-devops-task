@@ -5,14 +5,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 1. Dependencies
+# Install dependencies
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 2. Copy source
+# Copy app source
 COPY app/ .
 
 EXPOSE 8080
 
-# 3. Run app
+# Optional: run as non-root
+RUN useradd -m appuser
+USER appuser
+
 CMD ["python", "app.py"]

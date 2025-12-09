@@ -2,9 +2,7 @@
 replicaCount: 1
 
 image:
-  # Abhi local Docker image name
-  # Later: change to "your-dockerhub-username/healthletics"
-  repository:  xenin007/healthletics-devops
+  repository: xenin007/healthletics-devops
   pullPolicy: IfNotPresent
   tag: "0.1.0"
 

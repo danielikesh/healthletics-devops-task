@@ -41,5 +41,4 @@ This project demonstrates a complete DevOps workflow:
 
 ---
 
-## 📁 Project Structure
 
